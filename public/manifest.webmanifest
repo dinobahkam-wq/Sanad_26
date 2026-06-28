@@ -1,0 +1,30 @@
+{
+  "name": "SANAD Share",
+  "short_name": "SANAD",
+  "description": "تطبيق مشاركة إشعارات العمليات المالية إلى سند.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/share",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#EAFBF4",
+  "theme_color": "#10B981",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
