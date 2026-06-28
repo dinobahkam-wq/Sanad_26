@@ -66,6 +66,7 @@ export async function upsertOwnProfile(supabase: SupabaseClient, input: ProfileI
 
 export function getSupabaseErrorInfo(error: unknown) {
   const candidate = error as Partial<AuthError & PostgrestError> | null;
+  const safeJson = safeSerializeError(error);
 
   return {
     message: candidate?.message ?? String(error),
@@ -73,10 +74,26 @@ export function getSupabaseErrorInfo(error: unknown) {
     details: candidate?.details,
     hint: candidate?.hint,
     status: candidate?.status,
+    safeJson,
     full: error,
   };
 }
 
 export function logSupabaseError(context: string, error: unknown) {
   console.error(context, getSupabaseErrorInfo(error));
+}
+
+export function safeSerializeError(error: unknown) {
+  try {
+    return JSON.stringify(error, Object.getOwnPropertyNames(error));
+  } catch (jsonError) {
+    try {
+      return JSON.stringify({
+        message: error instanceof Error ? error.message : String(error),
+        serializationError: jsonError instanceof Error ? jsonError.message : String(jsonError),
+      });
+    } catch {
+      return String(error);
+    }
+  }
 }

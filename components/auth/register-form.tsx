@@ -11,6 +11,37 @@ import {
 } from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
+function isRateLimitError(info: ReturnType<typeof getSupabaseErrorInfo>) {
+  const text = `${info.message} ${info.code} ${info.status}`.toLowerCase();
+  return info.status === 429 || text.includes("rate") || text.includes("too many") || text.includes("over_email");
+}
+
+function isAlreadyRegisteredError(info: ReturnType<typeof getSupabaseErrorInfo>) {
+  const text = `${info.message} ${info.code}`.toLowerCase();
+  return (
+    text.includes("already registered") ||
+    text.includes("already exists") ||
+    text.includes("user_already_exists") ||
+    text.includes("email_exists")
+  );
+}
+
+function registerUserMessage(error: unknown) {
+  const info = getSupabaseErrorInfo(error);
+
+  if (isRateLimitError(info)) {
+    return "تمت محاولات تسجيل كثيرة. انتظر قليلًا ثم حاول مرة أخرى.";
+  }
+
+  if (isAlreadyRegisteredError(info)) {
+    return "هذا البريد مسجل مسبقًا. جرّب تسجيل الدخول.";
+  }
+
+  return info.message && info.message !== "[object Object]"
+    ? info.message
+    : "تعذر إنشاء الحساب. تحقق من البيانات ثم حاول مرة أخرى.";
+}
+
 export function RegisterForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -28,8 +59,11 @@ export function RegisterForm() {
     setMessage("");
     setIsSuccess(false);
 
+    const trimmedEmail = email.trim();
+    const trimmedName = fullName.trim();
     const normalizedPhone = normalizePhone(phone);
-    if (fullName.trim().length < 2) {
+
+    if (trimmedName.length < 2) {
       setMessage("اكتب الاسم الكامل بشكل صحيح.");
       return;
     }
@@ -42,15 +76,28 @@ export function RegisterForm() {
 
     try {
       const supabase = createBrowserSupabaseClient();
-      const { data, error } = await supabase.auth.signUp({
-        email: email.trim(),
+      console.info("register: before signUp", {
+        email: trimmedEmail,
+        hasPassword: Boolean(password),
+        phoneLength: normalizedPhone.length,
+      });
+
+      const signUpResult = await supabase.auth.signUp({
+        email: trimmedEmail,
         password,
       });
 
-      if (error) throw error;
-      if (!data.user) throw new Error("No user returned from signup.");
+      console.info("register: signUp result", {
+        hasUser: Boolean(signUpResult.data.user),
+        hasSession: Boolean(signUpResult.data.session),
+        userId: signUpResult.data.user?.id,
+        error: signUpResult.error ? getSupabaseErrorInfo(signUpResult.error) : null,
+      });
 
-      if (!data.session) {
+      if (signUpResult.error) throw signUpResult.error;
+      if (!signUpResult.data.user) throw new Error("No user returned from signup.");
+
+      if (!signUpResult.data.session) {
         setIsSuccess(true);
         setMessage("تم إنشاء الحساب. يرجى تأكيد البريد الإلكتروني ثم تسجيل الدخول.");
         window.setTimeout(() => {
@@ -59,23 +106,24 @@ export function RegisterForm() {
         return;
       }
 
-      await upsertOwnProfile(supabase, {
-        userId: data.session.user.id,
-        email: email.trim(),
-        fullName,
+      const upsertResult = await upsertOwnProfile(supabase, {
+        userId: signUpResult.data.session.user.id,
+        email: trimmedEmail,
+        fullName: trimmedName,
         phone: normalizedPhone,
+      });
+
+      console.info("register: profile upsert result", {
+        profileId: upsertResult.id,
+        status: upsertResult.status,
+        onboardingStatus: upsertResult.onboarding_status,
       });
 
       router.replace(nextPath);
       router.refresh();
     } catch (error) {
-      const info = getSupabaseErrorInfo(error);
       logSupabaseError("Register failed", error);
-      setMessage(
-        info.status === 429 || info.code === "over_email_send_rate_limit"
-          ? "تمت محاولات تسجيل كثيرة. انتظر قليلًا ثم حاول مرة أخرى."
-          : "تعذر إنشاء الحساب. قد يكون البريد أو الهاتف مستخدمًا مسبقًا.",
-      );
+      setMessage(registerUserMessage(error));
     } finally {
       setIsSubmitting(false);
     }
