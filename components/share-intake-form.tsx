@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { logSupabaseError } from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import type { IntakeResult, ShareFileKind } from "@/types/share";
 
@@ -17,6 +19,7 @@ function formatFileSize(size: number) {
 }
 
 export function ShareIntakeForm() {
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -45,6 +48,17 @@ export function ShareIntakeForm() {
 
     try {
       const supabase = createBrowserSupabaseClient();
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+      if (!session?.user) {
+        router.replace("/auth/login?next=/share");
+        return;
+      }
+
       const now = new Date().toISOString();
 
       const { data: intake, error: intakeError } = await supabase
@@ -53,12 +67,13 @@ export function ShareIntakeForm() {
           source: "pwa",
           status: "queued",
           received_at: now,
+          submitted_by_user_id: session.user.id,
         })
         .select("id,status")
         .single();
 
       if (intakeError) throw intakeError;
-      if (!intake?.id) throw new Error("لم يتم إنشاء سجل المشاركة.");
+      if (!intake?.id) throw new Error("Share intake row was not returned.");
 
       const uploadPlaceholder = {
         bucket: null,
@@ -82,7 +97,7 @@ export function ShareIntakeForm() {
         .single();
 
       if (fileError) throw fileError;
-      if (!intakeFile?.id) throw new Error("لم يتم إنشاء سجل الملف.");
+      if (!intakeFile?.id) throw new Error("Share intake file row was not returned.");
 
       const { data: job, error: jobError } = await supabase
         .from("share_processing_jobs")
@@ -96,7 +111,7 @@ export function ShareIntakeForm() {
         .single();
 
       if (jobError) throw jobError;
-      if (!job?.id) throw new Error("لم يتم إنشاء مهمة المعالجة.");
+      if (!job?.id) throw new Error("Share processing job row was not returned.");
 
       setResult({
         intakeId: intake.id,
@@ -106,8 +121,8 @@ export function ShareIntakeForm() {
       });
       setFile(null);
     } catch (submitError) {
-      console.error("Share intake failed", submitError);
-      setError("تعذر إنشاء طلب المشاركة. تحقق من إعدادات Supabase وسياسات الوصول ثم حاول مرة أخرى.");
+      logSupabaseError("Share intake failed", submitError);
+      setError("تعذر إنشاء طلب المشاركة. تحقق من صلاحية الحساب وسياسات الوصول ثم حاول مرة أخرى.");
     } finally {
       setIsSubmitting(false);
     }
@@ -126,8 +141,8 @@ export function ShareIntakeForm() {
       </label>
 
       <div className="notice">
-        سيتم إنشاء سجل مشاركة، ثم سجل ملف، ثم مهمة معالجة بحالة الانتظار. رفع الملف الفعلي جاهز للربط مع
-        Storage عند اعتماد bucket وسياسات الوصول.
+        سيتم إنشاء سجل مشاركة باسم المستخدم الحالي، ثم سجل ملف، ثم مهمة معالجة بحالة الانتظار. رفع الملف
+        الفعلي جاهز للربط مع Storage عند اعتماد bucket وسياسات الوصول.
       </div>
 
       <p className="error" role="alert">

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LogoutButton } from "@/components/auth/logout-button";
 
 export function AppHeader() {
   return (
@@ -16,6 +17,7 @@ export function AppHeader() {
         <Link className="nav-link" href="/workspace">
           مساحة العمل
         </Link>
+        <LogoutButton />
       </nav>
     </header>
   );
