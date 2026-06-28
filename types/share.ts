@@ -17,7 +17,8 @@ export type ShareIntakeFileRecord = {
 
 export type ShareProcessingJobRecord = {
   id: string;
-  share_intake_id: string;
+  intake_id: string;
+  file_id?: string | null;
   status?: IntakeStatus;
 };
 

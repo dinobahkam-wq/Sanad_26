@@ -1,18 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import {
-  type AppProfile,
-  getOwnProfile,
-  isProfileComplete,
-  logSupabaseError,
-} from "@/lib/auth/profile";
+import { getSupabaseErrorInfo } from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import type { AttachmentType, IntakeResult } from "@/types/share";
 
-type ShareGateState = "loading" | "ready" | "redirecting" | "invalid";
+type ShareIntakeFormProps = {
+  userId: string;
+  phone: string;
+  fullName: string;
+};
+
+type ShareFilePayload = {
+  intake_id: string;
+  bucket: "transaction-files";
+  path: string;
+  original_filename: string;
+  mime_type: string;
+  file_size_bytes: number;
+  storage_status: "pending";
+  attachment_type: AttachmentType;
+};
 
 function getAttachmentType(file: File): AttachmentType {
   if (file.type.startsWith("image/")) return "image";
@@ -26,75 +35,43 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} ميجابايت`;
 }
 
+function safePathPart(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9.\-_]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "attachment";
+}
+
+function buildPendingStoragePath(intakeId: string, file: File) {
+  return `pending/${intakeId}/${Date.now()}-${safePathPart(file.name)}`;
+}
+
 function logSupabaseStep(step: string, result: unknown) {
   console.info(step, result);
 }
 
-export function ShareIntakeForm() {
-  const router = useRouter();
+function warnHandledSupabaseError(context: string, error: unknown) {
+  console.warn(context, getSupabaseErrorInfo(error));
+}
+
+export function ShareIntakeForm({ userId, phone, fullName }: ShareIntakeFormProps) {
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<IntakeResult | null>(null);
-  const [gateState, setGateState] = useState<ShareGateState>("loading");
-  const [userId, setUserId] = useState<string | null>(null);
-  const [profile, setProfile] = useState<AppProfile | null>(null);
 
   const fileSummary = useMemo(() => {
     if (!file) return "لم يتم اختيار ملف";
     return `${file.name} · ${formatFileSize(file.size)}`;
   }, [file]);
 
-  const canSubmit = gateState === "ready" && Boolean(userId) && Boolean(profile) && !isSubmitting;
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function checkSessionAndProfile() {
-      setGateState("loading");
-      setError("");
-
-      try {
-        const supabase = createBrowserSupabaseClient();
-        const {
-          data: { session },
-          error: sessionError,
-        } = await supabase.auth.getSession();
-
-        if (sessionError) throw sessionError;
-        if (!session?.user) {
-          if (isMounted) setGateState("redirecting");
-          router.replace("/auth/login?next=/share");
-          return;
-        }
-
-        const userProfile = await getOwnProfile(supabase, session.user.id);
-        if (!isProfileComplete(userProfile)) {
-          if (isMounted) setGateState("redirecting");
-          router.replace("/auth/complete-profile?next=/share");
-          return;
-        }
-
-        if (!isMounted) return;
-        setUserId(session.user.id);
-        setProfile(userProfile);
-        setGateState("ready");
-      } catch (gateError) {
-        logSupabaseError("Share auth/profile gate failed", gateError);
-        if (!isMounted) return;
-        setGateState("invalid");
-        setError("تعذر التحقق من الجلسة والملف الشخصي. حدّث الصفحة وحاول مرة أخرى.");
-      }
-    }
-
-    checkSessionAndProfile();
-    return () => {
-      isMounted = false;
-    };
-  }, [router]);
+  const hasVerifiedProfileProps = Boolean(userId && phone && fullName);
+  const canSubmit = hasVerifiedProfileProps && !isSubmitting;
 
   async function createIntake() {
-    if (!canSubmit || !userId || !profile) {
+    if (!hasVerifiedProfileProps) {
       setError("يجب تسجيل الدخول وإكمال الملف الشخصي قبل إرسال الإشعار.");
       return;
     }
@@ -117,8 +94,8 @@ export function ShareIntakeForm() {
         .from("share_intakes")
         .insert({
           submitted_by_user_id: userId,
-          submitted_by_phone: profile.phone,
-          submitted_by_display_name: profile.full_name,
+          submitted_by_phone: phone,
+          submitted_by_display_name: fullName,
           source_channel: "pwa_share",
           status: "received",
         })
@@ -126,42 +103,71 @@ export function ShareIntakeForm() {
         .single();
 
       logSupabaseStep("share_intakes insert result", intakeResult);
-      if (intakeResult.error) throw intakeResult.error;
-      if (!intakeResult.data?.id) throw new Error("Share intake row was not returned.");
+      if (intakeResult.error) {
+        warnHandledSupabaseError("share_intakes insert failed", intakeResult.error);
+        setError("تعذر إنشاء طلب المشاركة. تحقق من صلاحية الحساب ثم حاول مرة أخرى.");
+        return;
+      }
+      if (!intakeResult.data?.id) {
+        console.error("share_intakes insert returned no id", intakeResult);
+        setError("تعذر إنشاء طلب المشاركة. حاول مرة أخرى.");
+        return;
+      }
+
+      const filePayload: ShareFilePayload = {
+        intake_id: intakeResult.data.id,
+        bucket: "transaction-files",
+        path: buildPendingStoragePath(intakeResult.data.id, file),
+        original_filename: file.name,
+        mime_type: file.type || "application/octet-stream",
+        file_size_bytes: file.size,
+        storage_status: "pending",
+        attachment_type: attachmentType,
+      };
+
+      console.info("share_intake_files insert payload", filePayload);
 
       const intakeFileResult = await supabase
         .from("share_intake_files")
-        .insert({
-          intake_id: intakeResult.data.id,
-          bucket: null,
-          path: null,
-          original_filename: file.name,
-          mime_type: file.type,
-          file_size_bytes: file.size,
-          storage_status: "pending_upload",
-          attachment_type: attachmentType,
-        })
+        .insert(filePayload)
         .select("id")
         .single();
 
       logSupabaseStep("share_intake_files insert result", intakeFileResult);
-      if (intakeFileResult.error) throw intakeFileResult.error;
-      if (!intakeFileResult.data?.id) throw new Error("Share intake file row was not returned.");
+      if (intakeFileResult.error) {
+        warnHandledSupabaseError("share_intake_files insert failed", intakeFileResult.error);
+        setError("تعذر حفظ بيانات الملف. تحقق من نوع الملف وحاول مرة أخرى.");
+        return;
+      }
+      if (!intakeFileResult.data?.id) {
+        console.error("share_intake_files insert returned no id", intakeFileResult);
+        setError("تعذر حفظ بيانات الملف. حاول مرة أخرى.");
+        return;
+      }
 
       const jobResult = await supabase
         .from("share_processing_jobs")
         .insert({
-          share_intake_id: intakeResult.data.id,
+          intake_id: intakeResult.data.id,
+          file_id: intakeFileResult.data.id,
           status: "queued",
-          job_type: "extract_financial_notice",
-          queued_at: new Date().toISOString(),
+          job_type: "extract",
+          job_payload: {},
         })
         .select("id,status")
         .single();
 
       logSupabaseStep("share_processing_jobs insert result", jobResult);
-      if (jobResult.error) throw jobResult.error;
-      if (!jobResult.data?.id) throw new Error("Share processing job row was not returned.");
+      if (jobResult.error) {
+        warnHandledSupabaseError("share_processing_jobs insert failed", jobResult.error);
+        setError("تم حفظ الملف، لكن تعذر إنشاء مهمة المعالجة. حاول مرة أخرى.");
+        return;
+      }
+      if (!jobResult.data?.id) {
+        console.error("share_processing_jobs insert returned no id", jobResult);
+        setError("تم حفظ الملف، لكن تعذر إنشاء مهمة المعالجة. حاول مرة أخرى.");
+        return;
+      }
 
       setResult({
         intakeId: intakeResult.data.id,
@@ -170,9 +176,9 @@ export function ShareIntakeForm() {
         status: "queued",
       });
       setFile(null);
-    } catch (submitError) {
-      logSupabaseError("Share intake failed", submitError);
-      setError("تعذر إنشاء طلب المشاركة. تحقق من صلاحية الحساب وسياسات الوصول ثم حاول مرة أخرى.");
+    } catch (unexpectedError) {
+      console.error("Unexpected share intake failure", getSupabaseErrorInfo(unexpectedError));
+      setError("حدث خطأ غير متوقع أثناء إرسال الإشعار. حاول مرة أخرى.");
     } finally {
       setIsSubmitting(false);
     }
@@ -180,23 +186,19 @@ export function ShareIntakeForm() {
 
   return (
     <div className="form-stack">
-      {gateState === "loading" ? <div className="notice">جاري التحقق من حسابك...</div> : null}
-      {gateState === "redirecting" ? <div className="notice">جاري تحويلك لإكمال الدخول...</div> : null}
-
       <label className="file-drop">
         <strong>اختر إشعار العملية</strong>
         <span className="file-name">{fileSummary}</span>
         <input
           type="file"
           accept="image/*,application/pdf,text/*"
-          disabled={gateState !== "ready"}
+          disabled={!hasVerifiedProfileProps}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
       </label>
 
       <div className="notice">
-        لن يتم إنشاء طلب مشاركة إلا بعد وجود جلسة صالحة وملف شخصي مكتمل. يتم ربط الطلب باسم ورقم صاحب
-        الحساب الحالي.
+        تم التحقق من حسابك وملفك الشخصي قبل عرض هذه الصفحة. سيتم ربط الطلب باسمك ورقم هاتفك المسجلين.
       </div>
 
       <p className="error" role="alert">

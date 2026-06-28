@@ -9,6 +9,13 @@ export type AppProfile = {
   onboarding_status: string | null;
 };
 
+export type CompleteAppProfile = AppProfile & {
+  phone: string;
+  full_name: string;
+  status: "active";
+  onboarding_status: "completed";
+};
+
 export type ProfileInput = {
   userId: string;
   email?: string | null;
@@ -20,7 +27,7 @@ export function normalizePhone(phone: string) {
   return phone.replace(/[^\d]/g, "");
 }
 
-export function isProfileComplete(profile: AppProfile | null) {
+export function isProfileComplete(profile: AppProfile | null): profile is CompleteAppProfile {
   return Boolean(
     profile?.full_name?.trim() &&
       profile?.phone?.trim() &&
