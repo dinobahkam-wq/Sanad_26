@@ -10,14 +10,15 @@ import {
   logSupabaseError,
 } from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
-import type { IntakeResult, ShareFileKind } from "@/types/share";
+import type { AttachmentType, IntakeResult } from "@/types/share";
 
 type ShareGateState = "loading" | "ready" | "redirecting" | "invalid";
 
-function getFileKind(file: File): ShareFileKind {
+function getAttachmentType(file: File): AttachmentType {
   if (file.type.startsWith("image/")) return "image";
   if (file.type === "application/pdf") return "pdf";
-  return "unknown";
+  if (file.type.startsWith("text/")) return "text";
+  return file.type ? "document" : "unknown";
 }
 
 function formatFileSize(size: number) {
@@ -99,15 +100,11 @@ export function ShareIntakeForm() {
     }
 
     if (!file) {
-      setError("اختر صورة أو ملف PDF لإشعار العملية.");
+      setError("اختر صورة أو ملفًا لإشعار العملية.");
       return;
     }
 
-    const kind = getFileKind(file);
-    if (kind === "unknown") {
-      setError("نوع الملف غير مدعوم. ارفع صورة أو ملف PDF فقط.");
-      return;
-    }
+    const attachmentType = getAttachmentType(file);
 
     setError("");
     setResult(null);
@@ -135,12 +132,14 @@ export function ShareIntakeForm() {
       const intakeFileResult = await supabase
         .from("share_intake_files")
         .insert({
-          share_intake_id: intakeResult.data.id,
-          file_name: file.name,
+          intake_id: intakeResult.data.id,
+          bucket: null,
+          path: null,
+          original_filename: file.name,
           mime_type: file.type,
-          file_size: file.size,
-          file_kind: kind,
-          upload_status: "pending_upload",
+          file_size_bytes: file.size,
+          storage_status: "pending_upload",
+          attachment_type: attachmentType,
         })
         .select("id")
         .single();
@@ -189,7 +188,7 @@ export function ShareIntakeForm() {
         <span className="file-name">{fileSummary}</span>
         <input
           type="file"
-          accept="image/*,application/pdf"
+          accept="image/*,application/pdf,text/*"
           disabled={gateState !== "ready"}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />

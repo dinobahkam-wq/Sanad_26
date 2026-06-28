@@ -1,5 +1,5 @@
 export type IntakeStatus = "received" | "queued" | "processing" | "completed" | "failed";
-export type ShareFileKind = "image" | "pdf" | "unknown";
+export type AttachmentType = "image" | "document" | "pdf" | "text" | "unknown";
 
 export type ShareIntakeRecord = {
   id: string;
@@ -9,9 +9,10 @@ export type ShareIntakeRecord = {
 
 export type ShareIntakeFileRecord = {
   id: string;
-  share_intake_id: string;
-  file_name?: string;
+  intake_id: string;
+  original_filename?: string;
   mime_type?: string;
+  attachment_type?: AttachmentType;
 };
 
 export type ShareProcessingJobRecord = {
