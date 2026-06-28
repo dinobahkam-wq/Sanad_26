@@ -22,15 +22,29 @@ export function LoginForm() {
 
     try {
       const supabase = createBrowserSupabaseClient();
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error: signInError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
 
-      if (error) throw error;
-      if (!data.user) throw new Error("No authenticated user returned.");
+      if (signInError) throw signInError;
 
-      const profile = await getOwnProfile(supabase, data.user.id);
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError) throw userError;
+
+      const currentUser = user ?? session?.user;
+      if (!currentUser) throw new Error("No authenticated user after sign in.");
+
+      const profile = await getOwnProfile(supabase, currentUser.id);
       const destination = isProfileComplete(profile)
         ? nextPath
         : `/auth/complete-profile?next=${encodeURIComponent(nextPath)}`;

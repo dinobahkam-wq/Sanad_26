@@ -64,13 +64,19 @@ export async function upsertOwnProfile(supabase: SupabaseClient, input: ProfileI
   return data;
 }
 
-export function logSupabaseError(context: string, error: unknown) {
+export function getSupabaseErrorInfo(error: unknown) {
   const candidate = error as Partial<AuthError & PostgrestError> | null;
-  console.error(context, {
+
+  return {
     message: candidate?.message ?? String(error),
     code: candidate?.code,
     details: candidate?.details,
     hint: candidate?.hint,
     status: candidate?.status,
-  });
+    full: error,
+  };
+}
+
+export function logSupabaseError(context: string, error: unknown) {
+  console.error(context, getSupabaseErrorInfo(error));
 }

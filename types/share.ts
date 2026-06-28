@@ -1,4 +1,4 @@
-export type IntakeStatus = "queued" | "processing" | "completed" | "failed";
+export type IntakeStatus = "received" | "queued" | "processing" | "completed" | "failed";
 export type ShareFileKind = "image" | "pdf" | "unknown";
 
 export type ShareIntakeRecord = {

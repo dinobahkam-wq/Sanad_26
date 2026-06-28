@@ -23,20 +23,20 @@ export function CompleteProfileForm() {
       try {
         const supabase = createBrowserSupabaseClient();
         const {
-          data: { user },
-          error,
-        } = await supabase.auth.getUser();
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
 
-        if (error) throw error;
-        if (!user) {
+        if (sessionError) throw sessionError;
+        if (!session?.user) {
           router.replace(`/auth/login?next=${encodeURIComponent("/auth/complete-profile")}`);
           return;
         }
 
-        const profile = await getOwnProfile(supabase, user.id);
+        const profile = await getOwnProfile(supabase, session.user.id);
         if (!isMounted) return;
 
-        setEmail(user.email ?? profile?.internal_email ?? null);
+        setEmail(session.user.email ?? profile?.internal_email ?? null);
         setFullName(profile?.full_name ?? "");
         setPhone(profile?.phone ?? "");
       } catch (error) {
@@ -72,19 +72,19 @@ export function CompleteProfileForm() {
     try {
       const supabase = createBrowserSupabaseClient();
       const {
-        data: { user },
-        error,
-      } = await supabase.auth.getUser();
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
 
-      if (error) throw error;
-      if (!user) {
+      if (sessionError) throw sessionError;
+      if (!session?.user) {
         router.replace(`/auth/login?next=${encodeURIComponent("/auth/complete-profile")}`);
         return;
       }
 
       await upsertOwnProfile(supabase, {
-        userId: user.id,
-        email: user.email ?? email,
+        userId: session.user.id,
+        email: session.user.email ?? email,
         fullName,
         phone: normalizedPhone,
       });

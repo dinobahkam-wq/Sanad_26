@@ -1,11 +1,18 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { logSupabaseError } from "@/lib/auth/profile";
+import {
+  type AppProfile,
+  getOwnProfile,
+  isProfileComplete,
+  logSupabaseError,
+} from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 import type { IntakeResult, ShareFileKind } from "@/types/share";
+
+type ShareGateState = "loading" | "ready" | "redirecting" | "invalid";
 
 function getFileKind(file: File): ShareFileKind {
   if (file.type.startsWith("image/")) return "image";
@@ -18,19 +25,79 @@ function formatFileSize(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} ميجابايت`;
 }
 
+function logSupabaseStep(step: string, result: unknown) {
+  console.info(step, result);
+}
+
 export function ShareIntakeForm() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<IntakeResult | null>(null);
+  const [gateState, setGateState] = useState<ShareGateState>("loading");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<AppProfile | null>(null);
 
   const fileSummary = useMemo(() => {
     if (!file) return "لم يتم اختيار ملف";
     return `${file.name} · ${formatFileSize(file.size)}`;
   }, [file]);
 
+  const canSubmit = gateState === "ready" && Boolean(userId) && Boolean(profile) && !isSubmitting;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkSessionAndProfile() {
+      setGateState("loading");
+      setError("");
+
+      try {
+        const supabase = createBrowserSupabaseClient();
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
+        if (sessionError) throw sessionError;
+        if (!session?.user) {
+          if (isMounted) setGateState("redirecting");
+          router.replace("/auth/login?next=/share");
+          return;
+        }
+
+        const userProfile = await getOwnProfile(supabase, session.user.id);
+        if (!isProfileComplete(userProfile)) {
+          if (isMounted) setGateState("redirecting");
+          router.replace("/auth/complete-profile?next=/share");
+          return;
+        }
+
+        if (!isMounted) return;
+        setUserId(session.user.id);
+        setProfile(userProfile);
+        setGateState("ready");
+      } catch (gateError) {
+        logSupabaseError("Share auth/profile gate failed", gateError);
+        if (!isMounted) return;
+        setGateState("invalid");
+        setError("تعذر التحقق من الجلسة والملف الشخصي. حدّث الصفحة وحاول مرة أخرى.");
+      }
+    }
+
+    checkSessionAndProfile();
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
+
   async function createIntake() {
+    if (!canSubmit || !userId || !profile) {
+      setError("يجب تسجيل الدخول وإكمال الملف الشخصي قبل إرسال الإشعار.");
+      return;
+    }
+
     if (!file) {
       setError("اختر صورة أو ملف PDF لإشعار العملية.");
       return;
@@ -48,75 +115,59 @@ export function ShareIntakeForm() {
 
     try {
       const supabase = createBrowserSupabaseClient();
-      const {
-        data: { session },
-        error: sessionError,
-      } = await supabase.auth.getSession();
 
-      if (sessionError) throw sessionError;
-      if (!session?.user) {
-        router.replace("/auth/login?next=/share");
-        return;
-      }
-
-      const now = new Date().toISOString();
-
-      const { data: intake, error: intakeError } = await supabase
+      const intakeResult = await supabase
         .from("share_intakes")
         .insert({
-          source: "pwa",
-          status: "queued",
-          received_at: now,
-          submitted_by_user_id: session.user.id,
+          submitted_by_user_id: userId,
+          submitted_by_phone: profile.phone,
+          submitted_by_display_name: profile.full_name,
+          source_channel: "pwa_share",
+          status: "received",
         })
         .select("id,status")
         .single();
 
-      if (intakeError) throw intakeError;
-      if (!intake?.id) throw new Error("Share intake row was not returned.");
+      logSupabaseStep("share_intakes insert result", intakeResult);
+      if (intakeResult.error) throw intakeResult.error;
+      if (!intakeResult.data?.id) throw new Error("Share intake row was not returned.");
 
-      const uploadPlaceholder = {
-        bucket: null,
-        path: null,
-        status: "pending_upload",
-      };
-
-      const { data: intakeFile, error: fileError } = await supabase
+      const intakeFileResult = await supabase
         .from("share_intake_files")
         .insert({
-          share_intake_id: intake.id,
+          share_intake_id: intakeResult.data.id,
           file_name: file.name,
           mime_type: file.type,
           file_size: file.size,
           file_kind: kind,
-          storage_bucket: uploadPlaceholder.bucket,
-          storage_path: uploadPlaceholder.path,
-          upload_status: uploadPlaceholder.status,
+          upload_status: "pending_upload",
         })
         .select("id")
         .single();
 
-      if (fileError) throw fileError;
-      if (!intakeFile?.id) throw new Error("Share intake file row was not returned.");
+      logSupabaseStep("share_intake_files insert result", intakeFileResult);
+      if (intakeFileResult.error) throw intakeFileResult.error;
+      if (!intakeFileResult.data?.id) throw new Error("Share intake file row was not returned.");
 
-      const { data: job, error: jobError } = await supabase
+      const jobResult = await supabase
         .from("share_processing_jobs")
         .insert({
-          share_intake_id: intake.id,
+          share_intake_id: intakeResult.data.id,
           status: "queued",
           job_type: "extract_financial_notice",
-          queued_at: now,
+          queued_at: new Date().toISOString(),
         })
         .select("id,status")
         .single();
 
-      if (jobError) throw jobError;
-      if (!job?.id) throw new Error("Share processing job row was not returned.");
+      logSupabaseStep("share_processing_jobs insert result", jobResult);
+      if (jobResult.error) throw jobResult.error;
+      if (!jobResult.data?.id) throw new Error("Share processing job row was not returned.");
 
       setResult({
-        intakeId: intake.id,
-        fileId: intakeFile.id,
-        jobId: job.id,
+        intakeId: intakeResult.data.id,
+        fileId: intakeFileResult.data.id,
+        jobId: jobResult.data.id,
         status: "queued",
       });
       setFile(null);
@@ -130,26 +181,30 @@ export function ShareIntakeForm() {
 
   return (
     <div className="form-stack">
+      {gateState === "loading" ? <div className="notice">جاري التحقق من حسابك...</div> : null}
+      {gateState === "redirecting" ? <div className="notice">جاري تحويلك لإكمال الدخول...</div> : null}
+
       <label className="file-drop">
         <strong>اختر إشعار العملية</strong>
         <span className="file-name">{fileSummary}</span>
         <input
           type="file"
           accept="image/*,application/pdf"
+          disabled={gateState !== "ready"}
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
         />
       </label>
 
       <div className="notice">
-        سيتم إنشاء سجل مشاركة باسم المستخدم الحالي، ثم سجل ملف، ثم مهمة معالجة بحالة الانتظار. رفع الملف
-        الفعلي جاهز للربط مع Storage عند اعتماد bucket وسياسات الوصول.
+        لن يتم إنشاء طلب مشاركة إلا بعد وجود جلسة صالحة وملف شخصي مكتمل. يتم ربط الطلب باسم ورقم صاحب
+        الحساب الحالي.
       </div>
 
       <p className="error" role="alert">
         {error}
       </p>
 
-      <button className="button button-primary" type="button" disabled={isSubmitting} onClick={createIntake}>
+      <button className="button button-primary" type="button" disabled={!canSubmit} onClick={createIntake}>
         {isSubmitting ? "جاري إنشاء الطلب..." : "إرسال إلى سند"}
       </button>
 

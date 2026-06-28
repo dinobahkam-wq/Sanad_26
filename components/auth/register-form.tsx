@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { logSupabaseError, normalizePhone, upsertOwnProfile } from "@/lib/auth/profile";
+import {
+  getSupabaseErrorInfo,
+  logSupabaseError,
+  normalizePhone,
+  upsertOwnProfile,
+} from "@/lib/auth/profile";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 export function RegisterForm() {
@@ -14,20 +19,22 @@ export function RegisterForm() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errorMessage, setErrorMessage] = useState("");
+  const [message, setMessage] = useState("");
+  const [isSuccess, setIsSuccess] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function submitRegister(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setErrorMessage("");
+    setMessage("");
+    setIsSuccess(false);
 
     const normalizedPhone = normalizePhone(phone);
     if (fullName.trim().length < 2) {
-      setErrorMessage("اكتب الاسم الكامل بشكل صحيح.");
+      setMessage("اكتب الاسم الكامل بشكل صحيح.");
       return;
     }
     if (normalizedPhone.length < 8) {
-      setErrorMessage("اكتب رقم هاتف صحيحًا بالأرقام.");
+      setMessage("اكتب رقم هاتف صحيحًا بالأرقام.");
       return;
     }
 
@@ -43,8 +50,17 @@ export function RegisterForm() {
       if (error) throw error;
       if (!data.user) throw new Error("No user returned from signup.");
 
+      if (!data.session) {
+        setIsSuccess(true);
+        setMessage("تم إنشاء الحساب. يرجى تأكيد البريد الإلكتروني ثم تسجيل الدخول.");
+        window.setTimeout(() => {
+          router.replace(`/auth/login?next=${encodeURIComponent(nextPath)}`);
+        }, 1800);
+        return;
+      }
+
       await upsertOwnProfile(supabase, {
-        userId: data.user.id,
+        userId: data.session.user.id,
         email: email.trim(),
         fullName,
         phone: normalizedPhone,
@@ -53,8 +69,13 @@ export function RegisterForm() {
       router.replace(nextPath);
       router.refresh();
     } catch (error) {
+      const info = getSupabaseErrorInfo(error);
       logSupabaseError("Register failed", error);
-      setErrorMessage("تعذر إنشاء الحساب. قد يكون البريد أو الهاتف مستخدمًا مسبقًا.");
+      setMessage(
+        info.status === 429 || info.code === "over_email_send_rate_limit"
+          ? "تمت محاولات تسجيل كثيرة. انتظر قليلًا ثم حاول مرة أخرى."
+          : "تعذر إنشاء الحساب. قد يكون البريد أو الهاتف مستخدمًا مسبقًا.",
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -98,10 +119,10 @@ export function RegisterForm() {
           required
         />
       </label>
-      <p className="error" role="alert">
-        {errorMessage}
+      <p className={isSuccess ? "notice" : "error"} role="alert">
+        {message}
       </p>
-      <button className="button button-primary" type="submit" disabled={isSubmitting}>
+      <button className="button button-primary" type="submit" disabled={isSubmitting || isSuccess}>
         {isSubmitting ? "جاري إنشاء الحساب..." : "إنشاء الحساب"}
       </button>
       <Link className="button button-secondary" href="/auth/login">
